@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Context path="/sn" docBase="sn" debug="5"
+reloadable="true" crossContext="true">
+
+<Resource name="jdbc/Test" auth="Container"
+   type="javax.sql.DataSource" logAbandoned="true" removeAbandoned="true"
+   removeAbandonedTimeout="30" maxActive="100"
+   maxIdle="30" maxWait="10000" username="nizam"
+   password="ajith786" factory="org.apache.tomcat.dbcp.dbcp.BasicDataSourceFactory"
+   driverClassName="com.mysql.jdbc.Driver"
+   url="jdbc:mysql://localhost/test2"/>
+
+</Context>

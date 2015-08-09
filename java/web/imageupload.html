@@ -1,0 +1,36 @@
+<!--
+To change this template, choose Tools | Templates
+and open the template in the editor.
+-->
+<!DOCTYPE html>
+<html>
+    <head>
+        <title></title>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <script type="text/javascript">
+            function init() {
+	document.getElementById("file_upload_form").onsubmit=function() {
+		document.getElementById("file_upload_form").target = "upload_target";
+		document.getElementById("upload_target").onload = uploadDone; //This function should be called when the iframe has compleated loading
+			// That will happen when the file is completely uploaded and the server has returned the data we need.
+	}
+}
+
+function uploadDone() { //Function will be called when iframe is loaded
+	var ret = frames['upload_target'].document.getElementsByTagName("body")[0].innerHTML;
+	var data = eval("("+ret+")"); //Parse JSON // Read the below explanations before passing judgment on me
+	
+	alert(data.status);	
+}
+        </script>
+    </head>
+    <body>
+        <form id="file_upload_form" method="post" enctype="multipart/form-data" target="upload_target">
+<input name="file" id="file" size="27" type="file" /><br />
+<input type="submit" name="action" value="Upload Image" /><br />
+<iframe id="upload_target" name="upload_target" src="imageupload.jsp" style="width:100px;height:100px;border:1px solid #ccc;"></iframe>
+</form>
+<div id="image_details"></div>
+
+    </body>
+</html>

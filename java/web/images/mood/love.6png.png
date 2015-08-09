@@ -1,0 +1,241 @@
+thod => $meth, variable_method => ref($meth),
+             object => $obj, args => \@exprs  };
+}
+
+# compat function only
+sub method {
+    my $self = shift;
+    my $info = $self->_method(@_);
+    return $self->e_method( $self->_method(@_) );
+}
+
+sub e_method {
+    my ($self, $info) = @_;
+    my $obj = $self->deparse($info->{object}, 24);
+
+    my $meth = $info->{method};
+    $meth = $self->deparse($meth, 1) if $info->{variable_method};
+    my $args = join(", ", map { $self->deparse($_, 6) } @{$info->{args}} );
+    my $kid = $obj . "->" . $meth;
+    if (length $args) {
+	return $kid . "(" . $args . ")"; # parens mandatory
+    } else {
+	return $kid;
+    }
+}
+
+# returns "&" if the prototype doesn't match the args,
+# or ("", $args_after_prototype_demunging) if it does.
+sub check_proto {
+    my $self = shift;
+    return "&" if $self->{'noproto'};
+    my($proto, @args) = @_;
+    my($arg, $real);
+    my $doneok = 0;
+    my @reals;
+    # An unbackslashed @ or % gobbles up the rest of the args
+    1 while $proto =~ s/(?<!\\)([@%])[^\]]+$/$1/;
+    while ($proto) {
+	$proto =~ s/^(\\?[\$\@&%*_]|\\\[[\$\@&%*]+\]|;)//;
+	my $chr = $1;
+	if ($chr eq "") {
+	    return "&" if @args;
+	} elsif ($chr eq ";") {
+	    $doneok = 1;
+	} elsif ($chr eq "@" or $chr eq "%") {
+	    push @reals, map($self->deparse($_, 6), @args);
+	    @args = ();
+	} else {
+	    $arg = shift @args;
+	    last unless $arg;
+	    if ($chr eq "\$" || $chr eq "_") {
+		if (want_scalar $arg) {
+		    push @reals, $self->deparse($arg, 6);
+		} else {
+		    return "&";
+		}
+	    } elsif ($chr eq "&") {
+		if ($arg->name =~ /^(s?refgen|undef)$/) {
+		    push @reals, $self->deparse($arg, 6);
+		} else {
+		    return "&";
+		}
+	    } elsif ($chr eq "*") {
+		if ($arg->name =~ /^s?refgen$/
+		    and $arg->first->first->name eq "rv2gv")
+		  {
+		      $real = $arg->first->first; # skip refgen, null
+		      if ($real->first->name eq "gv") {
+			  push @reals, $self->deparse($real, 6);
+		      } else {
+			  push @reals, $self->deparse($real->first, 6);
+		      }
+		  } else {
+		      return "&";
+		  }
+	    } elsif (substr($chr, 0, 1) eq "\\") {
+		$chr =~ tr/\\[]//d;
+		if ($arg->name =~ /^s?refgen$/ and
+		    !null($real = $arg->first) and
+		    ($chr =~ /\$/ && is_scalar($real->first)
+		     or ($chr =~ /@/
+			 && class($real->first->sibling) ne 'NULL'
+			 && $real->first->sibling->name
+			 =~ /^(rv2|pad)av$/)
+		     or ($chr =~ /%/
+			 && class($real->first->sibling) ne 'NULL'
+			 && $real->first->sibling->name
+			 =~ /^(rv2|pad)hv$/)
+		     #or ($chr =~ /&/ # This doesn't work
+		     #   && $real->first->name eq "rv2cv")
+		     or ($chr =~ /\*/
+			 && $real->first->name eq "rv2gv")))
+		  {
+		      push @reals, $self->deparse($real, 6);
+		  } else {
+		      return "&";
+		  }
+	    }
+       }
+    }
+    return "&" if $proto and !$doneok; # too few args and no `;'
+    return "&" if @args;               # too many args
+    return ("", join ", ", @reals);
+}
+
+sub pp_entersub {
+    my $self = shift;
+    my($op, $cx) = @_;
+    return $self->e_method($self->_method($op, $cx))
+        unless null $op->first->sibling;
+    my $prefix = "";
+    my $amper = "";
+    my($kid, @exprs);
+    if ($op->flags & OPf_SPECIAL && !($op->flags & OPf_MOD)) {
+	$prefix = "do ";
+    } elsif ($op->private & OPpENTERSUB_AMPER) {
+	$amper = "&";
+    }
+    $kid = $op->first;
+    $kid = $kid->first->sibling; # skip ex-list, pushmark
+    for (; not null $kid->sibling; $kid = $kid->sibling) {
+	push @exprs, $kid;
+    }
+    my $simple = 0;
+    my $proto = undef;
+    if (is_scope($kid)) {
+	$amper = "&";
+	$kid = "{" . $self->deparse($kid, 0) . "}";
+    } elsif ($kid->first->name eq "gv") {
+	my $gv = $self->gv_or_padgv($kid->first);
+	if (class($gv->CV) ne "SPECIAL") {
+	    $proto = $gv->CV->PV if $gv->CV->FLAGS & SVf_POK;
+	}
+	$simple = 1; # only calls of named functions can be prototyped
+	$kid = $self->deparse($kid, 24);
+	if (!$amper) {
+	    if ($kid eq 'main::') {
+		$kid = '::';
+	    } elsif ($kid !~ /^(?:\w|::)(?:[\w\d]|::(?!\z))*\z/) {
+		$kid = single_delim("q", "'", $kid) . '->';
+	    }
+	}
+    } elsif (is_scalar ($kid->first) && $kid->first->name ne 'rv2cv') {
+	$amper = "&";
+	$kid = $self->deparse($kid, 24);
+    } else {
+	$prefix = "";
+	my $arrow = is_subscriptable($kid->first) ? "" : "->";
+	$kid = $self->deparse($kid, 24) . $arrow;
+    }
+
+    # Doesn't matter how many prototypes there are, if
+    # they haven't happened yet!
+    my $declared;
+    {
+	no strict 'refs';
+	no warnings 'uninitialized';
+	$declared = exists $self->{'subs_declared'}{$kid}
+	    || (
+		 defined &{ ${$self->{'curstash'}."::"}{$kid} }
+		 && !exists
+		     $self->{'subs_deparsed'}{$self->{'curstash'}."::".$kid}
+		 && defined prototype $self->{'curstash'}."::".$kid
+	       );
+	if (!$declared && defined($proto)) {
+	    # Avoid "too early to check prototype" warning
+	    ($amper, $proto) = ('&');
+	}
+    }
+
+    my $args;
+    if ($declared and defined $proto and not $amper) {
+	($amper, $args) = $self->check_proto($proto, @exprs);
+	if ($amper eq "&") {
+	    $args = join(", ", map($self->deparse($_, 6), @exprs));
+	}
+    } else {
+	$args = join(", ", map($self->deparse($_, 6), @exprs));
+    }
+    if ($prefix or $amper) {
+	if ($op->flags & OPf_STACKED) {
+	    return $prefix . $amper . $kid . "(" . $args . ")";
+	} else {
+	    return $prefix . $amper. $kid;
+	}
+    } else {
+	# It's a syntax error to call CORE::GLOBAL::foo without a prefix,
+	# so it must have been translated from a keyword call. Translate
+	# it back.
+	$kid =~ s/^CORE::GLOBAL:://;
+
+	my $dproto = defined($proto) ? $proto : "undefined";
+        if (!$declared) {
+	    return "$kid(" . $args . ")";
+	} elsif ($dproto eq "") {
+	    return $kid;
+	} elsif ($dproto eq "\$" and is_scalar($exprs[0])) {
+	    # is_scalar is an excessively conservative test here:
+	    # really, we should be comparing to the precedence of the
+	    # top operator of $exprs[0] (ala unop()), but that would
+	    # take some major code restructuring to do right.
+	    return $self->maybe_parens_func($kid, $args, $cx, 16);
+	} elsif ($dproto ne '$' and defined($proto) || $simple) { #'
+	    return $self->maybe_parens_func($kid, $args, $cx, 5);
+	} else {
+	    return "$kid(" . $args . ")";
+	}
+    }
+}
+
+sub pp_enterwrite { unop(@_, "write") }
+
+# escape things that cause interpolation in double quotes,
+# but not character escapes
+sub uninterp {
+    my($str) = @_;
+    $str =~ s/(^|\G|[^\\])((?:\\\\)*)([\$\@]|\\[uUlLQE])/$1$2\\$3/g;
+    return $str;
+}
+
+{
+my $bal;
+BEGIN {
+    use re "eval";
+    # Matches any string which is balanced with respect to {braces}
+    $bal = qr(
+      (?:
+	[^\\{}]
+      | \\\\
+      | \\[{}]
+      | \{(??{$bal})\}
+      )*
+    )x;
+}
+
+# the same, but treat $|, $), $( and $ at the end of the string differently
+sub re_uninterp {
+    my($str) = @_;
+
+    $str =~ s/
+	  ( ^|\G  
