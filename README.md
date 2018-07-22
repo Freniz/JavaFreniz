@@ -1,2 +1,2 @@
 # Java-freniz
-Freniz social network with java code program
+Social Network with java code program
